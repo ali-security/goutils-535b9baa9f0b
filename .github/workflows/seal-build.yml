@@ -1,0 +1,61 @@
+name: seal-build
+
+on:
+  workflow_dispatch: {}
+
+jobs:
+  pack:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+      - name: Build module zip
+        run: |
+          set -euo pipefail
+          # Pack from a copy of the tree without .git and without this
+          # seal-only workflow, so the zip carries only the upstream file set.
+          SRC="$RUNNER_TEMP/src"
+          mkdir -p "$SRC" "$RUNNER_TEMP/helper" build_output
+          tar --exclude=./.git --exclude=./.github -cf - . | tar -xf - -C "$SRC"
+          cat > "$RUNNER_TEMP/helper/main.go" <<'EOF'
+          package main
+
+          import (
+              "log"
+              "os"
+
+              "golang.org/x/mod/module"
+              "golang.org/x/mod/zip"
+          )
+
+          func main() {
+              m := module.Version{Path: os.Args[1], Version: os.Args[2]}
+              f, err := os.Create(os.Args[4])
+              if err != nil {
+                  log.Fatal(err)
+              }
+              defer f.Close()
+              if err := zip.CreateFromDir(f, m, os.Args[3]); err != nil {
+                  log.Fatal(err)
+              }
+              log.Printf("created module zip: %s", os.Args[4])
+          }
+          EOF
+          OUT="$PWD/build_output/v1.1.0.zip"
+          cd "$RUNNER_TEMP/helper"
+          go mod init example.com/helper
+          go get golang.org/x/mod@v0.17.0
+          go run . github.com/Masterminds/goutils v1.1.0 "$SRC" "$OUT"
+          unzip -l "$OUT"
+      - name: Build package
+        run: go build ./...
+        env:
+          GO111MODULE: 'off'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: go-module-zip
+          path: build_output/v1.1.0.zip
+          if-no-files-found: error
